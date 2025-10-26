@@ -39,24 +39,7 @@
 
 // This example shows how to configure mixed networks (i.e. mixed b/g and HT/non-HT) and how are performance in several scenarios.
 //
-// The example compares first g only and mixed b/g cases with various configurations depending on the following parameters:
-// - protection mode that is configured on the AP;
-// - whether short PPDU format is supported by the 802.11b station;
-// - whether short slot time is supported by both the 802.11g station and the AP.
-//
-// The example then compares HT only and mixed HT/non-HT cases.
-//
-// The output results show that the presence of an 802.11b station strongly affects 802.11g performance.
-// Protection mechanisms ensure that the NAV value of 802.11b stations is set correctly in case of 802.11g transmissions.
-// In practice, those protection mechanism add a lot of overhead, resulting in reduced performance. CTS-To-Self introduces
-// less overhead than Rts-Cts, but is not heard by hidden stations (and is thus generally only recommended as a protection
-// mechanism for access points). Since short slot time is disabled once an 802.11b station enters the network, benefits from
-// short slot time are only observed in a g only configuration.
-//
-// The user can also select the payload size and can choose either an UDP or a TCP connection.
-// Example: ./waf --run "wifi-mixed-network --isUdp=1"
 
-using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE ("MixedNetwork");
 
@@ -134,15 +117,19 @@ Experiment::Run (Parameters params)
   wifiNStaNodes.Create (nWifiN);
   NodeContainer wifiApNode;
   wifiApNode.Create (1);
-
+// configure red ad hoc (MANET)
   YansWifiChannelHelper channel = YansWifiChannelHelper::Default ();
-  channel.AddPropagationLoss ("ns3::RangePropagationLossModel");
-
   YansWifiPhyHelper phy;
   phy.SetChannel (channel.Create ());
 
   WifiHelper wifi;
-  wifi.SetRemoteStationManager ("ns3::IdealWifiManager");
+  wifi.SetStandard (WIFI_STANDARD_80211b);
+  wifi.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                "DataMode", StringValue ("DsssRate11Mbps"),
+                                "ControlMode", StringValue ("DsssRate11Mbps"));
+
+  WifiMacHelper mac;
+  mac.SetType ("ns3::AdhocWifiMac");
 
   // 802.11b STA
   wifi.SetStandard (WIFI_STANDARD_80211b);
