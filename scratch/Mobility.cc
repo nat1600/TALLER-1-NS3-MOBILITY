@@ -169,20 +169,23 @@ SimulationResults Experiment::Run (Parameters params) {
 }
 
 void Experiment::SetupWifi (Parameters params) {
-    // Configurar canal WiFi
+    // Configurar canal WiFi con pérdidas
     YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
     channel.SetPropagationDelay("ns3::ConstantSpeedPropagationDelayModel");
-    channel.AddPropagationLoss("ns3::FriisPropagationLossModel");
+    channel.AddPropagationLoss("ns3::RangePropagationLossModel",
+                                "MaxRange", DoubleValue(250.0));
     
     YansWifiPhyHelper phy;
     phy.SetChannel(channel.Create());
+    phy.Set("TxPowerStart", DoubleValue(20.0));
+    phy.Set("TxPowerEnd", DoubleValue(20.0));
     
-    // Configurar WiFi en modo ad-hoc
+    // Configurar WiFi en modo ad-hoc con 802.11b
     WifiHelper wifi;
-    wifi.SetStandard(params.wifiStandard);
+    wifi.SetStandard(WIFI_STANDARD_80211b);
     wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
-                                  "DataMode", StringValue(params.wifiMode),
-                                  "ControlMode", StringValue(params.wifiMode));
+                                  "DataMode", StringValue("DsssRate1Mbps"),
+                                  "ControlMode", StringValue("DsssRate1Mbps"));
     
     WifiMacHelper mac;
     mac.SetType("ns3::AdhocWifiMac");
@@ -192,48 +195,56 @@ void Experiment::SetupWifi (Parameters params) {
 }
 
 void Experiment::SetupMobility (Parameters params) {
-    MobilityHelper mobility;
-    
     // Nivel 1: Movilidad de Cluster Heads (mayor escala)
-    mobility.SetPositionAllocator("ns3::RandomDiscPositionAllocator",
-                                   "X", DoubleValue(params.areaSize / 2.0),
-                                   "Y", DoubleValue(params.areaSize / 2.0),
-                                   "Rho", StringValue("ns3::UniformRandomVariable[Min=0|Max=" + 
-                                                      std::to_string(params.areaSize / 3.0) + "]"));
+    MobilityHelper clusterMobility;
     
-    mobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
-                              "Speed", StringValue("ns3::UniformRandomVariable[Min=" + 
-                                                   std::to_string(params.clusterMobilitySpeed * 0.5) + "|Max=" + 
-                                                   std::to_string(params.clusterMobilitySpeed * 1.5) + "]"),
-                              "Pause", StringValue("ns3::ConstantRandomVariable[Constant=2.0]"));
+    // Crear position allocator para los cluster heads
+    Ptr<ListPositionAllocator> chPositionAlloc = CreateObject<ListPositionAllocator>();
+    for (uint32_t i = 0; i < params.numClusters; i++) {
+        double angle = (2.0 * M_PI * i) / params.numClusters;
+        double radius = params.areaSize / 4.0;
+        double x = params.areaSize / 2.0 + radius * cos(angle);
+        double y = params.areaSize / 2.0 + radius * sin(angle);
+        chPositionAlloc->Add(Vector(x, y, 0.0));
+    }
     
-    mobility.Install(clusterHeads);
+    clusterMobility.SetPositionAllocator(chPositionAlloc);
+    clusterMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
+                                     "Speed", StringValue("ns3::UniformRandomVariable[Min=" + 
+                                                          std::to_string(params.clusterMobilitySpeed * 0.5) + "|Max=" + 
+                                                          std::to_string(params.clusterMobilitySpeed * 1.5) + "]"),
+                                     "Pause", StringValue("ns3::ConstantRandomVariable[Constant=2.0]"),
+                                     "PositionAllocator", PointerValue(chPositionAlloc));
+    
+    clusterMobility.Install(clusterHeads);
     
     // Nivel 2: Movilidad intra-clúster (nodos miembros siguen al clusterhead)
     for (uint32_t i = 0; i < params.numClusters; i++) {
         Ptr<MobilityModel> chMobility = clusterHeads.Get(i)->GetObject<MobilityModel>();
+        Vector chPos = chMobility->GetPosition();
         
+        MobilityHelper nodeMobility;
+        Ptr<ListPositionAllocator> nodePositionAlloc = CreateObject<ListPositionAllocator>();
+        
+        // Posicionar nodos alrededor del clusterhead
         for (uint32_t j = 0; j < params.nodesPerCluster; j++) {
-            Ptr<Node> node = clusterNodes[i].Get(j);
-            
-            // Posición inicial relativa al clusterhead
-            Vector chPos = chMobility->GetPosition();
             double angle = (2.0 * M_PI * j) / params.nodesPerCluster;
-            double radius = params.clusterRadius * ((double)rand() / RAND_MAX);
-            
-            Ptr<RandomWalk2dMobilityModel> nodeMobility = CreateObject<RandomWalk2dMobilityModel>();
-            nodeMobility->SetAttribute("Bounds", RectangleValue(Rectangle(0, params.areaSize, 
-                                                                          0, params.areaSize)));
-            nodeMobility->SetAttribute("Speed", StringValue("ns3::UniformRandomVariable[Min=" + 
-                                                            std::to_string(params.nodeMobilitySpeed) + "|Max=" + 
-                                                            std::to_string(params.nodeMobilitySpeed * 2.0) + "]"));
-            nodeMobility->SetAttribute("Distance", DoubleValue(params.clusterRadius / 2.0));
-            
-            node->AggregateObject(nodeMobility);
-            nodeMobility->SetPosition(Vector(chPos.x + radius * cos(angle),
-                                             chPos.y + radius * sin(angle),
-                                             0.0));
+            double radius = params.clusterRadius * (0.3 + 0.7 * ((double)rand() / RAND_MAX));
+            double x = chPos.x + radius * cos(angle);
+            double y = chPos.y + radius * sin(angle);
+            nodePositionAlloc->Add(Vector(x, y, 0.0));
         }
+        
+        nodeMobility.SetPositionAllocator(nodePositionAlloc);
+        nodeMobility.SetMobilityModel("ns3::RandomWalk2dMobilityModel",
+                                      "Bounds", RectangleValue(Rectangle(0, params.areaSize, 
+                                                                         0, params.areaSize)),
+                                      "Speed", StringValue("ns3::UniformRandomVariable[Min=" + 
+                                                           std::to_string(params.nodeMobilitySpeed) + "|Max=" + 
+                                                           std::to_string(params.nodeMobilitySpeed * 2.0) + "]"),
+                                      "Distance", DoubleValue(params.clusterRadius / 2.0));
+        
+        nodeMobility.Install(clusterNodes[i]);
     }
 }
 
@@ -253,23 +264,44 @@ void Experiment::SetupNetwork (Parameters params) {
     
     stack.Install(allNodes);
     
-    // Asignar direcciones IP
+    // Asignar direcciones IP a todos los dispositivos de una vez
     Ipv4AddressHelper address;
     address.SetBase("10.1.0.0", "255.255.0.0");
-    
-    for (uint32_t i = 0; i < allDevices.GetN(); i++) {
-        NetDeviceContainer singleDevice;
-        singleDevice.Add(allDevices.Get(i));
-        Ipv4InterfaceContainer iface = address.Assign(singleDevice);
-    }
+    address.Assign(allDevices);
 }
 
 void Experiment::SetupApplications (Parameters params) {
     uint16_t port = 9;
     
+    // Verificar que hay suficientes nodos
+    if (clusterHeads.GetN() == 0) {
+        std::cerr << "Error: No cluster heads available!" << std::endl;
+        return;
+    }
+    
     // Seleccionar nodos para comunicación
     // Server: primer clusterhead
     // Clients: un nodo de cada clúster
+    
+    // Obtener dirección IP del servidor
+    Ptr<Node> serverNode = clusterHeads.Get(0);
+    Ptr<Ipv4> serverIpv4 = serverNode->GetObject<Ipv4>();
+    
+    // Buscar la interfaz válida (no loopback)
+    Ipv4Address serverAddr;
+    for (uint32_t i = 0; i < serverIpv4->GetNInterfaces(); i++) {
+        if (serverIpv4->GetAddress(i, 0).GetLocal() != Ipv4Address("127.0.0.1")) {
+            serverAddr = serverIpv4->GetAddress(i, 0).GetLocal();
+            break;
+        }
+    }
+    
+    if (serverAddr == Ipv4Address()) {
+        std::cerr << "Error: Server IP address not found!" << std::endl;
+        return;
+    }
+    
+    std::cout << "Server IP: " << serverAddr << std::endl;
     
     if (params.isUdp) {
         // Servidor UDP en el primer clusterhead
@@ -279,23 +311,22 @@ void Experiment::SetupApplications (Parameters params) {
         serverApps.Stop(Seconds(params.simulationTime + 1));
         
         // Clientes UDP: un nodo de cada clúster envía al servidor
-        Ptr<Node> serverNode = clusterHeads.Get(0);
-        Ptr<Ipv4> ipv4 = serverNode->GetObject<Ipv4>();
-        Ipv4Address serverAddr = ipv4->GetAddress(1, 0).GetLocal();
-        
+        uint32_t clientCount = 0;
         for (uint32_t i = 0; i < params.numClusters; i++) {
-            if (clusterNodes[i].GetN() > 0) {
+            if (clusterNodes[i].GetN() > 0 && i > 0) { // Excluir el clúster del servidor
                 UdpClientHelper client(serverAddr, port);
                 client.SetAttribute("MaxPackets", UintegerValue(4294967295u));
                 client.SetAttribute("Interval", TimeValue(MilliSeconds(10)));
                 client.SetAttribute("PacketSize", UintegerValue(params.payloadSize));
                 
                 ApplicationContainer app = client.Install(clusterNodes[i].Get(0));
-                app.Start(Seconds(1.0));
+                app.Start(Seconds(2.0)); // Dar tiempo a que las rutas se establezcan
                 app.Stop(Seconds(params.simulationTime + 1));
                 clientApps.Add(app);
+                clientCount++;
             }
         }
+        std::cout << "Configured " << clientCount << " UDP clients" << std::endl;
     } else {
         // Servidor TCP
         Address localAddress(InetSocketAddress(Ipv4Address::GetAny(), port));
@@ -305,12 +336,9 @@ void Experiment::SetupApplications (Parameters params) {
         serverApps.Stop(Seconds(params.simulationTime + 1));
         
         // Clientes TCP
-        Ptr<Node> serverNode = clusterHeads.Get(0);
-        Ptr<Ipv4> ipv4 = serverNode->GetObject<Ipv4>();
-        Ipv4Address serverAddr = ipv4->GetAddress(1, 0).GetLocal();
-        
+        uint32_t clientCount = 0;
         for (uint32_t i = 0; i < params.numClusters; i++) {
-            if (clusterNodes[i].GetN() > 0) {
+            if (clusterNodes[i].GetN() > 0 && i > 0) { // Excluir el clúster del servidor
                 OnOffHelper onoff("ns3::TcpSocketFactory", 
                                   InetSocketAddress(serverAddr, port));
                 onoff.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
@@ -319,11 +347,13 @@ void Experiment::SetupApplications (Parameters params) {
                 onoff.SetAttribute("DataRate", DataRateValue(DataRate(std::to_string(params.dataRate) + "Mbps")));
                 
                 ApplicationContainer app = onoff.Install(clusterNodes[i].Get(0));
-                app.Start(Seconds(1.0));
+                app.Start(Seconds(2.0)); // Dar tiempo a que las rutas se establezcan
                 app.Stop(Seconds(params.simulationTime + 1));
                 clientApps.Add(app);
+                clientCount++;
             }
         }
+        std::cout << "Configured " << clientCount << " TCP clients" << std::endl;
     }
 }
 
@@ -398,8 +428,8 @@ int main (int argc, char *argv[]) {
     params.payloadSize = 1024;             // bytes
     params.dataRate = 2.0;                 // Mbps
     params.simulationTime = 30.0;          // segundos
-    params.wifiStandard = WIFI_STANDARD_80211a;
-    params.wifiMode = "OfdmRate6Mbps";
+    params.wifiStandard = WIFI_STANDARD_80211b;
+    params.wifiMode = "DsssRate11Mbps";
     
     bool runFullExperiment = false;
     std::string outputFile = "manet_results.csv";
